@@ -20,7 +20,22 @@ st.write(
     "Upload one or more daily MED-PC text files. The app detects DRL-20, "
     "PIT instrumental training, Pavlovian conditioning, and PIT transfer tests."
 )
+with st.sidebar:
+    st.image(
+        "assets/lab_logo.png",
+        width="stretch",
+    )
 
+    st.markdown("## How to use")
+
+    st.markdown(
+        """
+        1. Upload MED-PC text files.
+        2. Enter the animal IDs.
+        3. Review the detected sessions.
+        4. Download the Excel workbooks.
+        """
+    )
 
 def field(block, name, default=""):
     match = re.search(rf"^{re.escape(name)}:\s*(.*?)\s*$", block, re.MULTILINE)
