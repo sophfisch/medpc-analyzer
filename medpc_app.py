@@ -491,7 +491,7 @@ def safe_filename(text):
 
 
 uploads = st.file_uploader(
-    "Upload daily MED-PC text files",
+    "Upload MED-PC text files",
     type=["txt"],
     accept_multiple_files=True,
 )
