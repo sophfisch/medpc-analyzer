@@ -10,161 +10,22 @@ import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-09-28.1"
+APP_VERSION = "2026-09-28.2"
 
 
-st.set_page_config(page_title="MED-PC Analyzer", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="MED-PC Data Converter", page_icon="🐀", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background:
-            radial-gradient(circle at 10% 0%, rgba(68, 97, 255, 0.24), transparent 34%),
-            radial-gradient(circle at 92% 12%, rgba(0, 229, 190, 0.17), transparent 30%),
-            linear-gradient(145deg, #07111f 0%, #0b1526 45%, #08101d 100%);
-        color: #eef5ff;
-    }
-    .block-container {
-        max-width: 1450px;
-        padding-top: 2rem;
-        padding-bottom: 4rem;
-    }
-    .hero {
-        position: relative;
-        overflow: hidden;
-        padding: 2.7rem 3rem;
-        margin-bottom: 1.4rem;
-        border: 1px solid rgba(255, 255, 255, 0.13);
-        border-radius: 26px;
-        background: linear-gradient(120deg, rgba(55, 74, 220, 0.93), rgba(0, 177, 166, 0.82));
-        box-shadow: 0 25px 70px rgba(0, 0, 0, 0.28);
-    }
-    .hero:after {
-        content: "";
-        position: absolute;
-        width: 330px;
-        height: 330px;
-        right: -90px;
-        top: -150px;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.13);
-    }
-    .hero-kicker {
-        display: inline-block;
-        padding: 0.35rem 0.75rem;
-        margin-bottom: 1rem;
-        border: 1px solid rgba(255, 255, 255, 0.3);
-        border-radius: 999px;
-        font-size: 0.75rem;
-        font-weight: 800;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-    }
-    .hero h1 {
-        color: white !important;
-        font-size: clamp(2.25rem, 5vw, 4.3rem);
-        line-height: 0.98;
-        margin: 0;
-        letter-spacing: -0.055em;
-    }
-    .hero p {
-        max-width: 760px;
-        color: rgba(255, 255, 255, 0.88) !important;
-        margin: 1.15rem 0 0;
-        font-size: 1.08rem;
-    }
-    h1, h2, h3, p, label, .stMarkdown { color: #eef5ff; }
-    [data-testid="stFileUploader"] {
-        padding: 1.1rem;
-        border: 1px dashed rgba(88, 208, 255, 0.55);
-        border-radius: 18px;
-        background: rgba(14, 29, 49, 0.72);
-        box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
-    }
-    [data-testid="stMetric"] {
-        min-height: 125px;
-        padding: 1.15rem 1.25rem;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 18px;
-        background: linear-gradient(145deg, rgba(24, 42, 68, 0.93), rgba(13, 27, 47, 0.93));
-        box-shadow: 0 14px 35px rgba(0, 0, 0, 0.18);
-    }
-    [data-testid="stMetricValue"] { color: #67f5d2; }
-    [data-testid="stMetricLabel"] { color: #aabbd0; }
-    button[data-baseweb="tab"] {
-        font-weight: 750;
-        letter-spacing: 0.01em;
-    }
-    [data-testid="stDataFrame"] {
-        border: 1px solid rgba(255, 255, 255, 0.09);
-        border-radius: 15px;
-        overflow: hidden;
-        box-shadow: 0 12px 30px rgba(0,0,0,0.16);
-    }
-    .stDownloadButton button {
-        width: 100%;
-        min-height: 3rem;
-        color: white;
-        font-weight: 800;
-        border: 0;
-        border-radius: 13px;
-        background: linear-gradient(100deg, #5268ff, #00bfa9);
-        box-shadow: 0 10px 25px rgba(0, 191, 169, 0.2);
-    }
-    .stDownloadButton button:hover {
-        color: white;
-        transform: translateY(-1px);
-        border: 0;
-        background: linear-gradient(100deg, #6276ff, #12d4bd);
-    }
-    [data-testid="stAlert"] { border-radius: 14px; }
-    section[data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #0a1628, #08111f);
-        border-right: 1px solid rgba(255,255,255,0.08);
-    }
-    .procedure-chip {
-        display: inline-block;
-        margin: 0.2rem 0.25rem 0.2rem 0;
-        padding: 0.32rem 0.65rem;
-        border-radius: 999px;
-        color: #dffbff;
-        background: rgba(75, 104, 255, 0.22);
-        border: 1px solid rgba(103, 245, 210, 0.3);
-        font-size: 0.8rem;
-    }
-    .version {
-        color: #8093aa;
-        font-size: 0.78rem;
-        text-align: right;
-        margin-top: -0.6rem;
-        margin-bottom: 1rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
+# Keep the app working even if the image has not yet been uploaded to GitHub.
+logo_path = Path(__file__).parent / "assets" / "lab_logo.png"
+if logo_path.exists():
+    st.image(str(logo_path), width="stretch")
+
+st.title("MED-PC Behavioral Data Converter")
+st.caption(f"App version: {APP_VERSION}")
+st.write(
+    "Upload one or more daily MED-PC text files. The app detects DRL training FR1, DRL-20, "
+    "PIT instrumental training, Pavlovian conditioning, and PIT transfer tests."
 )
-
-st.markdown(
-    """
-    <div class="hero">
-        <div class="hero-kicker">Behavior Core · Data Pipeline</div>
-        <h1>MED-PC<br>Analyzer</h1>
-        <p>Drop in raw chamber files. Get clean, program-aware Excel workbooks for DRL and PIT—without touching the alphabet soup.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-st.markdown(f'<div class="version">BUILD {APP_VERSION}</div>', unsafe_allow_html=True)
-
-with st.sidebar:
-    st.markdown("## ⚡ Quick run")
-    st.markdown("1. Upload raw `.txt` files\n2. Confirm animal IDs\n3. Inspect detected sessions\n4. Download clean workbooks")
-    st.divider()
-    st.markdown("### Supported")
-    st.markdown("DRL training FR1  ·  DRL-20  ·  PIT FR1/RI schedules  ·  Pavlovian conditioning  ·  PIT transfer")
-    st.divider()
-    st.caption("Files are processed for the current session and are not intentionally saved by the app.")
 
 
 def field(block, name, default=""):
@@ -281,14 +142,7 @@ def parse_drl(block, base, tables):
 
 
 def parse_drl_training_fr1(block, base, tables):
-    """Parse the session-level counters saved by DRL_training_FR1.
-
-    This MED-PC program does not save timestamp arrays. F is both the number
-    of active FR1 presses and the number of response-earned reinforcers; I is
-    the inactive-lever counter. M is the completed session-minute counter.
-    Free pellets delivered by the 600-second autoshaping timer are not counted
-    in F, so they cannot be recovered from the exported data.
-    """
+    """Parse session totals produced by the DRL_training_FR1 program."""
     active_n = int(number(block, "F"))
     inactive_n = int(number(block, "I"))
     elapsed_min = number(block, "M")
@@ -680,20 +534,8 @@ if not all_sessions:
     st.stop()
 
 detected = pd.concat(all_sessions, ignore_index=True).sort_values("session_id")
-st.success("Files decoded successfully. Your sessions are ready to review.")
-
-metric_1, metric_2, metric_3, metric_4 = st.columns(4)
-metric_1.metric("FILES", len(uploads))
-metric_2.metric("SESSIONS", len(detected))
-metric_3.metric("PROGRAMS", detected["procedure"].nunique())
-metric_4.metric("BOXES", detected["box"].nunique())
-
-procedure_chips = "".join(
-    f'<span class="procedure-chip">{procedure}</span>'
-    for procedure in sorted(detected["procedure"].unique())
-)
-st.markdown("### Detected programs")
-st.markdown(procedure_chips, unsafe_allow_html=True)
+st.success(f"Detected {len(detected)} sessions across {len(uploads)} file(s).")
+st.write("Detected procedures:", ", ".join(sorted(detected["procedure"].unique())))
 
 st.subheader("Assign animal IDs")
 editor = detected.copy()
