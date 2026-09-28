@@ -25,7 +25,7 @@ with title_column:
     st.title("MED-PC Behavioral Data Converter")
     st.caption(f"App version: {APP_VERSION}")
 st.write(
-    "Upload one or more daily MED-PC text files. The app detects DRL training FR1, DRL-20, "
+    "Ciao! Upload MED-PC text files (make sure ending is .txt!). The app detects DRL training FR1, DRL-20, "
     "PIT instrumental training, Pavlovian conditioning, and PIT transfer tests."
 )
 
