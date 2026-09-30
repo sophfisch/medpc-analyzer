@@ -4,13 +4,14 @@ import zipfile
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import PercentFormatter
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-09-28.3"
+APP_VERSION = "2026-09-30.1"
 
 
 st.set_page_config(page_title="MED-PC Data Converter", page_icon="🐀", layout="wide")
@@ -25,7 +26,7 @@ with title_column:
     st.title("MED-PC Behavioral Data Converter")
     st.caption(f"App version: {APP_VERSION}")
 st.write(
-    "Ciao! Upload MED-PC text files (make sure ending is .txt!). The app detects DRL training FR1, DRL-20, "
+    "Upload one or more daily MED-PC text files. The app detects DRL training FR1, DRL-20, "
     "PIT instrumental training, Pavlovian conditioning, and PIT transfer tests."
 )
 
@@ -410,6 +411,123 @@ def apply_subjects(frames, subject_map):
                 frame["subject"] = mapped.fillna(frame["subject"])
 
 
+def add_fr1_progress_tables(frames, min_reinforcers, min_preference, required_days):
+    """Build longitudinal and Prism-ready tables for DRL training FR1."""
+    sessions = frames.get("sessions", pd.DataFrame())
+    if sessions.empty or "procedure" not in sessions.columns:
+        fr1 = pd.DataFrame()
+    else:
+        fr1 = sessions[sessions["procedure"].eq("DRL_training_FR1")].copy()
+
+    empty_keys = [
+        "fr1_progress", "fr1_latest", "fr1_prism_active",
+        "fr1_prism_inactive", "fr1_prism_preference",
+        "fr1_prism_reinforcers",
+    ]
+    if fr1.empty:
+        for key in empty_keys:
+            frames[key] = pd.DataFrame()
+        return
+
+    fr1["session_date"] = pd.to_datetime(
+        fr1["date"], format="%m/%d/%y", errors="coerce"
+    )
+    missing_parsed_dates = fr1["session_date"].isna()
+    if missing_parsed_dates.any():
+        fr1.loc[missing_parsed_dates, "session_date"] = pd.to_datetime(
+            fr1.loc[missing_parsed_dates, "date"], errors="coerce"
+        )
+    valid_dates = sorted(fr1["session_date"].dropna().unique())
+    day_map = {date: day for day, date in enumerate(valid_dates, 1)}
+    fr1["training_day"] = fr1["session_date"].map(day_map).astype("Int64")
+
+    # If an exported record has no readable date, retain it at the end and
+    # assign an upload-order day so the record is not silently discarded.
+    if fr1["training_day"].isna().any():
+        next_day = len(valid_dates) + 1
+        missing_dates = fr1.loc[fr1["training_day"].isna(), "date"].drop_duplicates()
+        missing_map = {date: next_day + i for i, date in enumerate(missing_dates)}
+        fr1.loc[fr1["training_day"].isna(), "training_day"] = (
+            fr1.loc[fr1["training_day"].isna(), "date"].map(missing_map)
+        )
+    fr1["training_day"] = fr1["training_day"].astype(int)
+
+    fr1["total_lever_presses"] = fr1["active_presses"] + fr1["inactive_presses"]
+    fr1["active_preference"] = np.where(
+        fr1["total_lever_presses"] > 0,
+        fr1["active_presses"] / fr1["total_lever_presses"],
+        np.nan,
+    )
+    fr1["duplicate_rat_date"] = fr1.duplicated(["subject", "date"], keep=False)
+    fr1 = fr1.sort_values(["subject", "training_day", "start_time", "session_id"])
+    fr1["change_in_active_presses"] = fr1.groupby("subject")["active_presses"].diff()
+    fr1["meets_threshold"] = (
+        fr1["earned_reinforcers"].ge(min_reinforcers)
+        & fr1["active_preference"].ge(min_preference)
+    )
+
+    fr1["threshold_streak"] = 0
+    for _, rat_rows in fr1.groupby("subject", sort=False):
+        streak = 0
+        previous_day = None
+        for index, row in rat_rows.iterrows():
+            day = int(row["training_day"])
+            if bool(row["meets_threshold"]):
+                if previous_day is None or day > previous_day + 1:
+                    streak = 1
+                elif day == previous_day + 1:
+                    streak += 1
+                # A duplicate session on the same day does not add a day.
+            else:
+                streak = 0
+            fr1.at[index, "threshold_streak"] = streak
+            previous_day = day
+    fr1["threshold_streak"] = fr1["threshold_streak"].astype(int)
+    fr1["training_status"] = np.where(
+        fr1["threshold_streak"].ge(required_days),
+        "Threshold met",
+        "Continue training",
+    )
+
+    progress_columns = [
+        "session_id", "subject", "training_day", "date", "box",
+        "active_presses", "inactive_presses", "total_lever_presses",
+        "earned_reinforcers", "active_preference",
+        "change_in_active_presses", "meets_threshold", "threshold_streak",
+        "training_status", "duplicate_rat_date", "source_file",
+    ]
+    progress = fr1[[column for column in progress_columns if column in fr1.columns]].copy()
+    frames["fr1_progress"] = progress
+
+    latest = progress.sort_values(["subject", "training_day", "session_id"]).groupby(
+        "subject", as_index=False
+    ).tail(1)
+    latest_columns = [
+        "session_id", "subject", "training_day", "date", "box",
+        "active_presses", "inactive_presses", "earned_reinforcers",
+        "active_preference", "change_in_active_presses", "threshold_streak",
+        "training_status", "duplicate_rat_date",
+    ]
+    frames["fr1_latest"] = latest[
+        [column for column in latest_columns if column in latest.columns]
+    ].sort_values("subject")
+
+    def prism_table(value_column):
+        pivot = progress.pivot_table(
+            index="subject",
+            columns="training_day",
+            values=value_column,
+            aggfunc="first",
+        ).sort_index()
+        pivot.columns = [f"Day {int(day)}" for day in pivot.columns]
+        return pivot.reset_index()
+
+    frames["fr1_prism_active"] = prism_table("active_presses")
+    frames["fr1_prism_inactive"] = prism_table("inactive_presses")
+    frames["fr1_prism_preference"] = prism_table("active_preference")
+    frames["fr1_prism_reinforcers"] = prism_table("earned_reinforcers")
+
+
 def excel_bytes(frames):
     sheet_names = {
         "sessions": "Session Summary",
@@ -424,6 +542,12 @@ def excel_bytes(frames):
         "cue_events": "Cue Events",
         "hardware_tests": "Hardware Tests",
         "unknown": "Unrecognized Sessions",
+        "fr1_progress": "FR1 Training Progress",
+        "fr1_latest": "FR1 Latest Status",
+        "fr1_prism_active": "Prism Active Presses",
+        "fr1_prism_inactive": "Prism Inactive Presses",
+        "fr1_prism_preference": "Prism Active Preference",
+        "fr1_prism_reinforcers": "Prism Reinforcers",
     }
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -439,8 +563,17 @@ def frames_for_sessions(frames, session_ids):
     """Keep only rows belonging to the selected MED-PC sessions."""
     selected = {}
     session_ids = set(session_ids)
+    selected_procedures = set()
+    if not frames["sessions"].empty:
+        selected_procedures = set(
+            frames["sessions"].loc[
+                frames["sessions"]["session_id"].isin(session_ids), "procedure"
+            ]
+        )
     for key, frame in frames.items():
-        if frame.empty:
+        if key.startswith("fr1_") and "DRL_training_FR1" not in selected_procedures:
+            selected[key] = frame.iloc[0:0].copy()
+        elif frame.empty:
             selected[key] = frame.copy()
         elif "session_id" in frame.columns:
             selected[key] = frame[frame["session_id"].isin(session_ids)].copy()
@@ -554,6 +687,41 @@ editor = st.data_editor(
 subject_map = dict(zip(editor["session_id"], editor["subject"]))
 apply_subjects(frames, subject_map)
 
+has_fr1_training = (
+    not frames["sessions"].empty
+    and frames["sessions"]["procedure"].eq("DRL_training_FR1").any()
+)
+if has_fr1_training:
+    with st.sidebar.expander("FR1 progress settings", expanded=True):
+        st.caption("Set these values to your lab's approved training criterion.")
+        min_reinforcers = st.number_input(
+            "Minimum earned reinforcers",
+            min_value=0,
+            value=30,
+            step=1,
+        )
+        min_preference_percent = st.number_input(
+            "Minimum active-lever preference (%)",
+            min_value=0,
+            max_value=100,
+            value=80,
+            step=1,
+        )
+        required_days = st.number_input(
+            "Consecutive days required",
+            min_value=1,
+            value=2,
+            step=1,
+        )
+    add_fr1_progress_tables(
+        frames,
+        min_reinforcers=float(min_reinforcers),
+        min_preference=float(min_preference_percent) / 100,
+        required_days=int(required_days),
+    )
+else:
+    add_fr1_progress_tables(frames, 0, 0, 1)
+
 if not frames["unknown"].empty:
     st.error("Some sessions use an unrecognized procedure. They are listed in the Excel workbook.")
 
@@ -568,6 +736,87 @@ if not frames["sessions"].empty:
         st.dataframe(concise_summary, hide_index=True, width="stretch")
 else:
     st.info("No behavioral sessions were detected; only hardware-test records were found.")
+
+if not frames["fr1_progress"].empty:
+    st.subheader("FR1 training progress")
+    st.caption(
+        "Training day is assigned from the chronological dates in the uploaded files. "
+        "Upload every completed day together so Day 1, Day 2, and later days are labeled correctly."
+    )
+
+    if frames["fr1_progress"]["duplicate_rat_date"].any():
+        duplicates = frames["fr1_progress"].loc[
+            frames["fr1_progress"]["duplicate_rat_date"], ["subject", "date", "source_file"]
+        ]
+        st.warning(
+            "At least one rat has more than one FR1 session on the same date. "
+            "Review these records before using the Prism tables."
+        )
+        st.dataframe(duplicates, hide_index=True, width="stretch")
+
+    latest_display = frames["fr1_latest"].drop(columns=["session_id"], errors="ignore")
+    latest_display["active_preference_percent"] = latest_display["active_preference"] * 100
+    latest_display = latest_display.drop(columns=["active_preference"])
+    st.markdown("**Latest status for each rat**")
+    st.dataframe(
+        latest_display,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "active_preference_percent": st.column_config.NumberColumn(
+                "active_preference_percent", format="%.1f%%"
+            )
+        },
+    )
+
+    subjects = sorted(frames["fr1_progress"]["subject"].dropna().astype(str).unique())
+    selected_subjects = st.multiselect(
+        "Rats to plot",
+        options=subjects,
+        default=subjects,
+    )
+    plot_data = frames["fr1_progress"][
+        frames["fr1_progress"]["subject"].astype(str).isin(selected_subjects)
+    ].copy()
+    if not plot_data.empty:
+        plot_left, plot_right = st.columns(2)
+        with plot_left:
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            sns.lineplot(
+                data=plot_data,
+                x="training_day",
+                y="active_presses",
+                hue="subject",
+                marker="o",
+                legend=False,
+                ax=ax,
+            )
+            ax.axhline(float(min_reinforcers), color="black", linestyle="--", linewidth=1)
+            ax.set_xlabel("Training day")
+            ax.set_ylabel("Active presses / earned reinforcers")
+            ax.set_xticks(sorted(plot_data["training_day"].unique()))
+            st.pyplot(fig)
+            plt.close(fig)
+
+        with plot_right:
+            fig, ax = plt.subplots(figsize=(7, 4.5))
+            sns.lineplot(
+                data=plot_data,
+                x="training_day",
+                y="active_preference",
+                hue="subject",
+                marker="o",
+                legend=False,
+                ax=ax,
+            )
+            ax.axhline(float(min_preference_percent) / 100, color="black", linestyle="--", linewidth=1)
+            ax.set_xlabel("Training day")
+            ax.set_ylabel("Active-lever preference")
+            ax.set_ylim(0, 1.05)
+            ax.set_xticks(sorted(plot_data["training_day"].unique()))
+            ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+            st.pyplot(fig)
+            plt.close(fig)
 
 if not frames["pit_trials"].empty:
     st.subheader("PIT transfer trial preview")
