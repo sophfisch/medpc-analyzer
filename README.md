@@ -5,6 +5,13 @@ This package extends the existing MED-PC converter with two pages:
 1. **Progress Dashboard** — read-only DRL and PIT group summaries and individual-rat progress.
 2. **Analyze New Data** — the existing upload, ID assignment, parsing, preview, and Excel export workflow.
 
+## October 21 update
+
+- DRL-15 and DRL-20 are labeled explicitly on every DRL chart.
+- The DRL page has separate **Cohort overview** and **Individual rats** tabs.
+- Each rat has press/reward, median-IRT, efficiency, and session-table views.
+- Median-IRT plots include the programmed 5/10/15/20-second criterion in red.
+
 ## Run locally
 
 ```bash

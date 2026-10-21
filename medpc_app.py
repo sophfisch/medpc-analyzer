@@ -10,7 +10,7 @@ import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-10-21.1"
+APP_VERSION = "2026-10-21.2"
 
 
 st.set_page_config(page_title="MED-PC Data Converter", page_icon="🐀", layout="wide")
@@ -51,6 +51,38 @@ def metric_long(path, sheet, value_name):
     return frame.melt(id_vars="Rat", var_name="Session", value_name=value_name)
 
 
+def drl_target(session_label):
+    """Return the programmed DRL criterion encoded in a session label."""
+    match = re.search(r"DRL-(\d+)", str(session_label))
+    return float(match.group(1)) if match else np.nan
+
+
+def plot_drl_series(frame, ylabel, title, target_line=False, percent=False):
+    """Plot every saved session explicitly so later DRL stages stay visible."""
+    sessions = frame.index.astype(str).tolist()
+    x = np.arange(len(sessions))
+    fig, ax = plt.subplots(figsize=(12, 4.2))
+    for column in frame.columns:
+        values = pd.to_numeric(frame[column], errors="coerce")
+        ax.plot(x, values, marker="o", linewidth=2.2, markersize=5, label=column)
+    if target_line:
+        targets = np.array([drl_target(label) for label in sessions], dtype=float)
+        ax.step(x, targets, where="mid", color="#e34a4a", linestyle="--",
+                linewidth=2.2, label="Programmed criterion")
+    ax.set_title(title, loc="left", fontweight="bold")
+    ax.set_ylabel(ylabel)
+    ax.set_xticks(x)
+    ax.set_xticklabels(sessions, rotation=45, ha="right", fontsize=8)
+    ax.grid(axis="y", alpha=.22)
+    ax.margins(x=.02)
+    if percent:
+        ax.set_ylim(0, 100)
+    if len(frame.columns) > 1 or target_line:
+        ax.legend(frameon=False, ncol=min(3, len(frame.columns) + int(target_line)))
+    fig.tight_layout()
+    return fig
+
+
 def render_progress_dashboard():
     drl_path, pit_path = load_saved_progress()
     st.title("Behavioral Training Progress")
@@ -75,27 +107,67 @@ def render_progress_dashboard():
         c4.metric("Median IRT", f"{latest_irt.median():.1f} s")
         st.info("DRL head-entry measures from box 4 are excluded because that detector is unreliable.")
 
-        st.subheader("Group overview")
-        measure = st.selectbox("DRL measure", ["Active presses", "Successful presses", "Efficiency", "Median IRT"], key="drl_measure")
-        source = {"Active presses": active, "Successful presses": successful,
-                  "Efficiency": efficiency, "Median IRT": median_irt}[measure]
-        group = source.set_index("Rat").apply(pd.to_numeric, errors="coerce").mean(axis=0)
-        st.line_chart(group.rename(measure), height=330)
+        overview_tab, individual_tab = st.tabs(["Cohort overview", "Individual rats"])
+        with overview_tab:
+            measure = st.selectbox(
+                "DRL measure",
+                ["Active presses", "Successful presses", "Efficiency", "Median IRT"],
+                key="drl_measure",
+            )
+            source = {"Active presses": active, "Successful presses": successful,
+                      "Efficiency": efficiency, "Median IRT": median_irt}[measure]
+            group = source.set_index("Rat").apply(pd.to_numeric, errors="coerce").mean(axis=0)
+            plot_values = group.mul(100) if measure == "Efficiency" else group
+            plot_frame = plot_values.rename(f"Mean {measure}").to_frame()
+            fig = plot_drl_series(
+                plot_frame,
+                "Efficiency (%)" if measure == "Efficiency" else measure,
+                f"Cohort mean — {measure}",
+                target_line=measure == "Median IRT",
+                percent=measure == "Efficiency",
+            )
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            st.caption("All saved stages are shown: DRL-5, DRL-10, DRL-15, and DRL-20.")
 
-        st.subheader("Individual rat progress")
-        rat_id = st.selectbox("Rat", active["Rat"].tolist(), key="drl_rat")
-        rat_metrics = pd.DataFrame({
-            "Active presses": active.set_index("Rat").loc[rat_id],
-            "Successful presses": successful.set_index("Rat").loc[rat_id],
-            "Efficiency (%)": efficiency.set_index("Rat").loc[rat_id].astype(float) * 100,
-            "Median IRT (s)": median_irt.set_index("Rat").loc[rat_id],
-        }).apply(pd.to_numeric, errors="coerce")
-        st.line_chart(rat_metrics[["Active presses", "Successful presses"]], height=300)
-        st.line_chart(rat_metrics[["Median IRT (s)"]], height=250)
-        st.dataframe(rat_metrics.round(2), width="stretch")
-        if rat_metrics["Active presses"].eq(0).any():
-            zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
-            st.warning(f"Zero active presses recorded: {zero_days}")
+        with individual_tab:
+            st.subheader("Individual rat progress")
+            rat_id = st.selectbox("Choose a rat", active["Rat"].tolist(), key="drl_rat")
+            rat_metrics = pd.DataFrame({
+                "Active presses": active.set_index("Rat").loc[rat_id],
+                "Successful presses": successful.set_index("Rat").loc[rat_id],
+                "Efficiency (%)": efficiency.set_index("Rat").loc[rat_id].astype(float) * 100,
+                "Median IRT (s)": median_irt.set_index("Rat").loc[rat_id],
+            }).apply(pd.to_numeric, errors="coerce")
+            last = rat_metrics.iloc[-1]
+            r1, r2, r3, r4 = st.columns(4)
+            r1.metric("Latest active presses", f"{last['Active presses']:.0f}")
+            r2.metric("Latest rewards", f"{last['Successful presses']:.0f}")
+            r3.metric("Latest efficiency", f"{last['Efficiency (%)']:.1f}%")
+            r4.metric("Latest median IRT", f"{last['Median IRT (s)']:.1f} s")
+
+            fig = plot_drl_series(
+                rat_metrics[["Active presses", "Successful presses"]],
+                "Count", f"{rat_id} — presses and rewards",
+            )
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            fig = plot_drl_series(
+                rat_metrics[["Median IRT (s)"]], "Seconds", f"{rat_id} — median IRT",
+                target_line=True,
+            )
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            fig = plot_drl_series(
+                rat_metrics[["Efficiency (%)"]], "Efficiency (%)", f"{rat_id} — efficiency",
+                percent=True,
+            )
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            st.dataframe(rat_metrics.round(2), width="stretch")
+            if rat_metrics["Active presses"].eq(0).any():
+                zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
+                st.warning(f"Zero active presses recorded: {zero_days}")
         st.download_button("Download current DRL workbook", drl_path.read_bytes(),
                            file_name=drl_path.name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
