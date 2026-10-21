@@ -4,27 +4,147 @@ import zipfile
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-from matplotlib.ticker import PercentFormatter
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-09-30.1"
+APP_VERSION = "2026-10-21.1"
 
 
 st.set_page_config(page_title="MED-PC Data Converter", page_icon="🐀", layout="wide")
 
+st.markdown(
+    """
+    <style>
+    .stApp {background: linear-gradient(145deg, #07111f 0%, #101b2f 55%, #08131f 100%);}
+    [data-testid="stSidebar"] {background: #091525;}
+    div[data-testid="stMetric"] {background: #12233b; border: 1px solid #244a6b;
+      padding: 14px; border-radius: 14px;}
+    h1, h2, h3 {letter-spacing: .01em;}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+page = st.sidebar.radio("Page", ["Progress Dashboard", "Analyze New Data"])
+st.sidebar.caption("Shared dashboard · approved viewers only")
+
+
+@st.cache_data(show_spinner=False)
+def load_saved_progress():
+    data_dir = Path(__file__).parent / "data"
+    drl_path = data_dir / "drl_progress.xlsx"
+    pit_path = data_dir / "pit_progress.xlsx"
+    return drl_path, pit_path
+
+
+def wide_metric(path, sheet):
+    frame = pd.read_excel(path, sheet_name=sheet)
+    frame = frame.loc[:, ~frame.columns.astype(str).str.startswith("Unnamed")]
+    return frame
+
+
+def metric_long(path, sheet, value_name):
+    frame = wide_metric(path, sheet)
+    return frame.melt(id_vars="Rat", var_name="Session", value_name=value_name)
+
+
+def render_progress_dashboard():
+    drl_path, pit_path = load_saved_progress()
+    st.title("Behavioral Training Progress")
+    st.caption("DRL and PIT cohorts · updated October 21, 2026")
+    if not drl_path.exists() or not pit_path.exists():
+        st.error("Saved dashboard data are missing. Add both files to the app's data folder.")
+        st.stop()
+
+    drl_tab, pit_tab = st.tabs(["DRL cohort", "PIT cohort"])
+    with drl_tab:
+        active = wide_metric(drl_path, "Active Presses")
+        successful = wide_metric(drl_path, "Successful Presses")
+        efficiency = wide_metric(drl_path, "Efficiency")
+        median_irt = wide_metric(drl_path, "Median IRT")
+        latest = active.columns[-1]
+        latest_eff = pd.to_numeric(efficiency[latest], errors="coerce")
+        latest_irt = pd.to_numeric(median_irt[latest], errors="coerce")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Animals", len(active))
+        c2.metric("Current session", latest)
+        c3.metric("Mean efficiency", f"{latest_eff.mean():.1%}")
+        c4.metric("Median IRT", f"{latest_irt.median():.1f} s")
+        st.info("DRL head-entry measures from box 4 are excluded because that detector is unreliable.")
+
+        st.subheader("Group overview")
+        measure = st.selectbox("DRL measure", ["Active presses", "Successful presses", "Efficiency", "Median IRT"], key="drl_measure")
+        source = {"Active presses": active, "Successful presses": successful,
+                  "Efficiency": efficiency, "Median IRT": median_irt}[measure]
+        group = source.set_index("Rat").apply(pd.to_numeric, errors="coerce").mean(axis=0)
+        st.line_chart(group.rename(measure), height=330)
+
+        st.subheader("Individual rat progress")
+        rat_id = st.selectbox("Rat", active["Rat"].tolist(), key="drl_rat")
+        rat_metrics = pd.DataFrame({
+            "Active presses": active.set_index("Rat").loc[rat_id],
+            "Successful presses": successful.set_index("Rat").loc[rat_id],
+            "Efficiency (%)": efficiency.set_index("Rat").loc[rat_id].astype(float) * 100,
+            "Median IRT (s)": median_irt.set_index("Rat").loc[rat_id],
+        }).apply(pd.to_numeric, errors="coerce")
+        st.line_chart(rat_metrics[["Active presses", "Successful presses"]], height=300)
+        st.line_chart(rat_metrics[["Median IRT (s)"]], height=250)
+        st.dataframe(rat_metrics.round(2), width="stretch")
+        if rat_metrics["Active presses"].eq(0).any():
+            zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
+            st.warning(f"Zero active presses recorded: {zero_days}")
+        st.download_button("Download current DRL workbook", drl_path.read_bytes(),
+                           file_name=drl_path.name,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    with pit_tab:
+        long = pd.read_excel(pit_path, sheet_name="RI5 Long Data")
+        long["Date"] = pd.to_datetime(long["Date"], errors="coerce")
+        latest_day = int(pd.to_numeric(long["RI5 day"], errors="coerce").max())
+        current = long[pd.to_numeric(long["RI5 day"], errors="coerce").eq(latest_day)]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Animals", long["Rat"].nunique())
+        c2.metric("Current session", "RI-60 Day 4")
+        c3.metric("Mean active presses", f"{current['Active presses'].mean():.1f}")
+        c4.metric("Mean active preference", f"{current['Active preference'].mean():.1%}")
+
+        st.subheader("Group overview")
+        grouped = long.groupby("RI5 day", sort=True).agg(
+            active_presses=("Active presses", "mean"),
+            pellets=("Pellets", "mean"),
+            active_preference=("Active preference", "mean"),
+        )
+        st.line_chart(grouped[["active_presses", "pellets"]], height=330)
+
+        st.subheader("Individual rat progress")
+        pit_rat = st.selectbox("Rat", sorted(long["Rat"].dropna().unique()), key="pit_rat")
+        one = long[long["Rat"].eq(pit_rat)].sort_values("RI5 day").copy()
+        one["Session"] = ["RI-5 D1", "RI-5 D2", "RI-5 D3", "RI-15 D1", "RI-30 D1",
+                          "RI-30 D2", "RI-60 D1", "RI-60 D2", "RI-60 D3", "RI-60 D4"][:len(one)]
+        one = one.set_index("Session")
+        st.line_chart(one[["Active presses", "Inactive presses", "Pellets"]], height=310)
+        display_cols = ["Date", "Box", "Active presses", "Inactive presses", "Active preference",
+                        "Pellets", "Head entries", "Post-press checks", "Post-press check rate", "Criterion"]
+        st.dataframe(one[[c for c in display_cols if c in one.columns]], width="stretch")
+        st.download_button("Download current PIT workbook", pit_path.read_bytes(),
+                           file_name=pit_path.name,
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+if page == "Progress Dashboard":
+    render_progress_dashboard()
+    st.stop()
+
 # Keep the app working even if the image has not yet been uploaded to GitHub.
 logo_path = Path(__file__).parent / "assets" / "lab_logo.png"
-logo_column, title_column = st.columns([1, 5], vertical_alignment="center")
-with logo_column:
-    if logo_path.exists():
-        st.image(str(logo_path), width=140)
-with title_column:
-    st.title("MED-PC Behavioral Data Converter")
-    st.caption(f"App version: {APP_VERSION}")
+if logo_path.exists():
+    st.image(str(logo_path), width="stretch")
+
+st.title("MED-PC Behavioral Data Converter")
+st.caption(f"App version: {APP_VERSION}")
 st.write(
     "Upload one or more daily MED-PC text files. The app detects DRL training FR1, DRL-20, "
     "PIT instrumental training, Pavlovian conditioning, and PIT transfer tests."
@@ -100,9 +220,12 @@ def parse_drl(block, base, tables):
     nonreinforced_head_n = int(number(block, "R"))
     duration_s = number(block, "C") / 10
 
+    schedule_match = re.search(r"DRL_(\d+)", base["procedure"])
+    schedule_seconds = int(schedule_match.group(1)) if schedule_match else 20
     row = {
         **base,
-        "family": "DRL-20",
+        "family": f"DRL-{schedule_seconds}",
+        "schedule_seconds": schedule_seconds,
         "duration_s": duration_s,
         "duration_min": duration_s / 60,
         "active_presses": active_n,
@@ -204,6 +327,50 @@ def parse_instrumental(block, base, tables):
         for i, time in enumerate(first_n(array(block, variable), count), 1):
             tables["instrumental_events"].append(
                 {**base, "event_number": i, "event_type": event_type, "time_s": time}
+            )
+
+
+def parse_pit_ri(block, base, tables):
+    """Parse the newer PIT RI programs (PIT_2b/2c/2d/2e_RI...)."""
+    b = array(block, "B")
+    schedule_match = re.search(r"RI(\d+)$", base["procedure"])
+    schedule_seconds = int(schedule_match.group(1)) if schedule_match else int(at(b, 12, 0))
+    active_n, inactive_n = int(at(b, 4, 0)), int(at(b, 5, 0))
+    duration_s = number(block, "T") / 100
+    row = {
+        **base,
+        "family": "PIT instrumental",
+        "schedule": f"RI{schedule_seconds}",
+        "schedule_seconds": schedule_seconds,
+        "active_lever": "Right" if int(at(b, 13, 1)) == 1 else "Left",
+        "duration_s": duration_s,
+        "duration_min": duration_s / 60,
+        "active_presses": active_n,
+        "inactive_presses": inactive_n,
+        "pellets": int(at(b, 2, 0)),
+        "head_entries": int(at(b, 0, 0)),
+        "head_in_time_s": at(b, 1, 0) / 100,
+        "beam_breaks": int(at(b, 4, 0)),
+    }
+    tables["sessions"].append(row)
+    event_specs = [("J", active_n, "Active press"), ("I", int(at(b, 2, 0)), "Pellet delivery")]
+    for variable, count, event_type in event_specs:
+        for i, time in enumerate(first_n(array(block, variable), count), 1):
+            if time <= 0:
+                break
+            tables["instrumental_events"].append(
+                {**base, "event_number": i, "event_type": event_type, "time_s": time}
+            )
+    heads = array(block, "C")
+    head_number = 0
+    for i in range(0, len(heads) - 1, 2):
+        start, duration = heads[i], heads[i + 1]
+        if start == 0 and duration == 0:
+            break
+        if start > 0 and duration > 0:
+            head_number += 1
+            tables["instrumental_events"].append(
+                {**base, "event_number": head_number, "event_type": "Head entry", "time_s": start}
             )
 
 
@@ -376,10 +543,15 @@ def parse_uploads(uploads):
                 continue
             session_id += 1
             base = base_row(block, upload.name, session_id)
-            if procedure == "DRL_20_HFD":
+            if procedure in {
+                "DRL_5_HFD", "DRL_10_HFD", "DRL_10_HFD_new",
+                "DRL_15_HFD_new", "DRL_20_HFD", "DRL_20_HFD_new",
+            }:
                 parse_drl(block, base, tables)
             elif procedure == "DRL_training_FR1":
                 parse_drl_training_fr1(block, base, tables)
+            elif re.match(r"^PIT_\d+[A-Za-z]?_RI\d+$", procedure):
+                parse_pit_ri(block, base, tables)
             elif procedure.startswith("PIT_Instrumental_"):
                 parse_instrumental(block, base, tables)
             elif procedure.startswith("PIT_Pav_"):
@@ -390,8 +562,6 @@ def parse_uploads(uploads):
                 parse_output_test(block, base, tables)
             elif procedure in {
                 "PR TEST HFD",
-                "DRL_5_HFD",
-                "DRL_10_HFD",
             }:
                 # These can coexist in the same daily file as DRL-20.
                 # They are intentionally outside this app's requested analyses.
@@ -411,123 +581,6 @@ def apply_subjects(frames, subject_map):
                 frame["subject"] = mapped.fillna(frame["subject"])
 
 
-def add_fr1_progress_tables(frames, min_reinforcers, min_preference, required_days):
-    """Build longitudinal and Prism-ready tables for DRL training FR1."""
-    sessions = frames.get("sessions", pd.DataFrame())
-    if sessions.empty or "procedure" not in sessions.columns:
-        fr1 = pd.DataFrame()
-    else:
-        fr1 = sessions[sessions["procedure"].eq("DRL_training_FR1")].copy()
-
-    empty_keys = [
-        "fr1_progress", "fr1_latest", "fr1_prism_active",
-        "fr1_prism_inactive", "fr1_prism_preference",
-        "fr1_prism_reinforcers",
-    ]
-    if fr1.empty:
-        for key in empty_keys:
-            frames[key] = pd.DataFrame()
-        return
-
-    fr1["session_date"] = pd.to_datetime(
-        fr1["date"], format="%m/%d/%y", errors="coerce"
-    )
-    missing_parsed_dates = fr1["session_date"].isna()
-    if missing_parsed_dates.any():
-        fr1.loc[missing_parsed_dates, "session_date"] = pd.to_datetime(
-            fr1.loc[missing_parsed_dates, "date"], errors="coerce"
-        )
-    valid_dates = sorted(fr1["session_date"].dropna().unique())
-    day_map = {date: day for day, date in enumerate(valid_dates, 1)}
-    fr1["training_day"] = fr1["session_date"].map(day_map).astype("Int64")
-
-    # If an exported record has no readable date, retain it at the end and
-    # assign an upload-order day so the record is not silently discarded.
-    if fr1["training_day"].isna().any():
-        next_day = len(valid_dates) + 1
-        missing_dates = fr1.loc[fr1["training_day"].isna(), "date"].drop_duplicates()
-        missing_map = {date: next_day + i for i, date in enumerate(missing_dates)}
-        fr1.loc[fr1["training_day"].isna(), "training_day"] = (
-            fr1.loc[fr1["training_day"].isna(), "date"].map(missing_map)
-        )
-    fr1["training_day"] = fr1["training_day"].astype(int)
-
-    fr1["total_lever_presses"] = fr1["active_presses"] + fr1["inactive_presses"]
-    fr1["active_preference"] = np.where(
-        fr1["total_lever_presses"] > 0,
-        fr1["active_presses"] / fr1["total_lever_presses"],
-        np.nan,
-    )
-    fr1["duplicate_rat_date"] = fr1.duplicated(["subject", "date"], keep=False)
-    fr1 = fr1.sort_values(["subject", "training_day", "start_time", "session_id"])
-    fr1["change_in_active_presses"] = fr1.groupby("subject")["active_presses"].diff()
-    fr1["meets_threshold"] = (
-        fr1["earned_reinforcers"].ge(min_reinforcers)
-        & fr1["active_preference"].ge(min_preference)
-    )
-
-    fr1["threshold_streak"] = 0
-    for _, rat_rows in fr1.groupby("subject", sort=False):
-        streak = 0
-        previous_day = None
-        for index, row in rat_rows.iterrows():
-            day = int(row["training_day"])
-            if bool(row["meets_threshold"]):
-                if previous_day is None or day > previous_day + 1:
-                    streak = 1
-                elif day == previous_day + 1:
-                    streak += 1
-                # A duplicate session on the same day does not add a day.
-            else:
-                streak = 0
-            fr1.at[index, "threshold_streak"] = streak
-            previous_day = day
-    fr1["threshold_streak"] = fr1["threshold_streak"].astype(int)
-    fr1["training_status"] = np.where(
-        fr1["threshold_streak"].ge(required_days),
-        "Threshold met",
-        "Continue training",
-    )
-
-    progress_columns = [
-        "session_id", "subject", "training_day", "date", "box",
-        "active_presses", "inactive_presses", "total_lever_presses",
-        "earned_reinforcers", "active_preference",
-        "change_in_active_presses", "meets_threshold", "threshold_streak",
-        "training_status", "duplicate_rat_date", "source_file",
-    ]
-    progress = fr1[[column for column in progress_columns if column in fr1.columns]].copy()
-    frames["fr1_progress"] = progress
-
-    latest = progress.sort_values(["subject", "training_day", "session_id"]).groupby(
-        "subject", as_index=False
-    ).tail(1)
-    latest_columns = [
-        "session_id", "subject", "training_day", "date", "box",
-        "active_presses", "inactive_presses", "earned_reinforcers",
-        "active_preference", "change_in_active_presses", "threshold_streak",
-        "training_status", "duplicate_rat_date",
-    ]
-    frames["fr1_latest"] = latest[
-        [column for column in latest_columns if column in latest.columns]
-    ].sort_values("subject")
-
-    def prism_table(value_column):
-        pivot = progress.pivot_table(
-            index="subject",
-            columns="training_day",
-            values=value_column,
-            aggfunc="first",
-        ).sort_index()
-        pivot.columns = [f"Day {int(day)}" for day in pivot.columns]
-        return pivot.reset_index()
-
-    frames["fr1_prism_active"] = prism_table("active_presses")
-    frames["fr1_prism_inactive"] = prism_table("inactive_presses")
-    frames["fr1_prism_preference"] = prism_table("active_preference")
-    frames["fr1_prism_reinforcers"] = prism_table("earned_reinforcers")
-
-
 def excel_bytes(frames):
     sheet_names = {
         "sessions": "Session Summary",
@@ -542,12 +595,6 @@ def excel_bytes(frames):
         "cue_events": "Cue Events",
         "hardware_tests": "Hardware Tests",
         "unknown": "Unrecognized Sessions",
-        "fr1_progress": "FR1 Training Progress",
-        "fr1_latest": "FR1 Latest Status",
-        "fr1_prism_active": "Prism Active Presses",
-        "fr1_prism_inactive": "Prism Inactive Presses",
-        "fr1_prism_preference": "Prism Active Preference",
-        "fr1_prism_reinforcers": "Prism Reinforcers",
     }
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -563,17 +610,8 @@ def frames_for_sessions(frames, session_ids):
     """Keep only rows belonging to the selected MED-PC sessions."""
     selected = {}
     session_ids = set(session_ids)
-    selected_procedures = set()
-    if not frames["sessions"].empty:
-        selected_procedures = set(
-            frames["sessions"].loc[
-                frames["sessions"]["session_id"].isin(session_ids), "procedure"
-            ]
-        )
     for key, frame in frames.items():
-        if key.startswith("fr1_") and "DRL_training_FR1" not in selected_procedures:
-            selected[key] = frame.iloc[0:0].copy()
-        elif frame.empty:
+        if frame.empty:
             selected[key] = frame.copy()
         elif "session_id" in frame.columns:
             selected[key] = frame[frame["session_id"].isin(session_ids)].copy()
@@ -601,7 +639,7 @@ def frames_for_sessions(frames, session_ids):
                 "source_file", "date", "subject", "box", "procedure",
                 "start_time", "end_time", "duration_s", "duration_min",
             ]
-            if procedure == "DRL_20_HFD":
+            if procedure.startswith("DRL_"):
                 relevant = common + [
                     "active_presses", "successful_presses", "failed_presses",
                     "inactive_presses", "reinforcers", "efficiency",
@@ -614,7 +652,7 @@ def frames_for_sessions(frames, session_ids):
                     "seconds_since_last_press_or_free_pellet",
                     "completed_minutes_since_last_active_press",
                 ]
-            elif procedure.startswith("PIT_Instrumental_"):
+            elif procedure.startswith("PIT_Instrumental_") or re.match(r"^PIT_\d+[A-Za-z]?_RI\d+$", procedure):
                 relevant = common + [
                     "schedule", "active_lever", "active_presses",
                     "inactive_presses", "pellets", "head_entries", "beam_breaks",
@@ -687,41 +725,6 @@ editor = st.data_editor(
 subject_map = dict(zip(editor["session_id"], editor["subject"]))
 apply_subjects(frames, subject_map)
 
-has_fr1_training = (
-    not frames["sessions"].empty
-    and frames["sessions"]["procedure"].eq("DRL_training_FR1").any()
-)
-if has_fr1_training:
-    with st.sidebar.expander("FR1 progress settings", expanded=True):
-        st.caption("Set these values to your lab's approved training criterion.")
-        min_reinforcers = st.number_input(
-            "Minimum earned reinforcers",
-            min_value=0,
-            value=30,
-            step=1,
-        )
-        min_preference_percent = st.number_input(
-            "Minimum active-lever preference (%)",
-            min_value=0,
-            max_value=100,
-            value=80,
-            step=1,
-        )
-        required_days = st.number_input(
-            "Consecutive days required",
-            min_value=1,
-            value=2,
-            step=1,
-        )
-    add_fr1_progress_tables(
-        frames,
-        min_reinforcers=float(min_reinforcers),
-        min_preference=float(min_preference_percent) / 100,
-        required_days=int(required_days),
-    )
-else:
-    add_fr1_progress_tables(frames, 0, 0, 1)
-
 if not frames["unknown"].empty:
     st.error("Some sessions use an unrecognized procedure. They are listed in the Excel workbook.")
 
@@ -736,87 +739,6 @@ if not frames["sessions"].empty:
         st.dataframe(concise_summary, hide_index=True, width="stretch")
 else:
     st.info("No behavioral sessions were detected; only hardware-test records were found.")
-
-if not frames["fr1_progress"].empty:
-    st.subheader("FR1 training progress")
-    st.caption(
-        "Training day is assigned from the chronological dates in the uploaded files. "
-        "Upload every completed day together so Day 1, Day 2, and later days are labeled correctly."
-    )
-
-    if frames["fr1_progress"]["duplicate_rat_date"].any():
-        duplicates = frames["fr1_progress"].loc[
-            frames["fr1_progress"]["duplicate_rat_date"], ["subject", "date", "source_file"]
-        ]
-        st.warning(
-            "At least one rat has more than one FR1 session on the same date. "
-            "Review these records before using the Prism tables."
-        )
-        st.dataframe(duplicates, hide_index=True, width="stretch")
-
-    latest_display = frames["fr1_latest"].drop(columns=["session_id"], errors="ignore")
-    latest_display["active_preference_percent"] = latest_display["active_preference"] * 100
-    latest_display = latest_display.drop(columns=["active_preference"])
-    st.markdown("**Latest status for each rat**")
-    st.dataframe(
-        latest_display,
-        hide_index=True,
-        width="stretch",
-        column_config={
-            "active_preference_percent": st.column_config.NumberColumn(
-                "active_preference_percent", format="%.1f%%"
-            )
-        },
-    )
-
-    subjects = sorted(frames["fr1_progress"]["subject"].dropna().astype(str).unique())
-    selected_subjects = st.multiselect(
-        "Rats to plot",
-        options=subjects,
-        default=subjects,
-    )
-    plot_data = frames["fr1_progress"][
-        frames["fr1_progress"]["subject"].astype(str).isin(selected_subjects)
-    ].copy()
-    if not plot_data.empty:
-        plot_left, plot_right = st.columns(2)
-        with plot_left:
-            fig, ax = plt.subplots(figsize=(7, 4.5))
-            sns.lineplot(
-                data=plot_data,
-                x="training_day",
-                y="active_presses",
-                hue="subject",
-                marker="o",
-                legend=False,
-                ax=ax,
-            )
-            ax.axhline(float(min_reinforcers), color="black", linestyle="--", linewidth=1)
-            ax.set_xlabel("Training day")
-            ax.set_ylabel("Active presses / earned reinforcers")
-            ax.set_xticks(sorted(plot_data["training_day"].unique()))
-            st.pyplot(fig)
-            plt.close(fig)
-
-        with plot_right:
-            fig, ax = plt.subplots(figsize=(7, 4.5))
-            sns.lineplot(
-                data=plot_data,
-                x="training_day",
-                y="active_preference",
-                hue="subject",
-                marker="o",
-                legend=False,
-                ax=ax,
-            )
-            ax.axhline(float(min_preference_percent) / 100, color="black", linestyle="--", linewidth=1)
-            ax.set_xlabel("Training day")
-            ax.set_ylabel("Active-lever preference")
-            ax.set_ylim(0, 1.05)
-            ax.set_xticks(sorted(plot_data["training_day"].unique()))
-            ax.yaxis.set_major_formatter(PercentFormatter(1.0))
-            st.pyplot(fig)
-            plt.close(fig)
 
 if not frames["pit_trials"].empty:
     st.subheader("PIT transfer trial preview")
