@@ -10,27 +10,29 @@ import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-10-21.2"
+APP_VERSION = "2026-10-21.3"
 
 
-st.set_page_config(page_title="MED-PC Data Converter", page_icon="🐀", layout="wide")
+st.set_page_config(page_title="Behavioral Training Progress", page_icon="🐀", layout="wide")
 
 st.markdown(
     """
     <style>
-    .stApp {background: linear-gradient(145deg, #07111f 0%, #101b2f 55%, #08131f 100%);}
-    [data-testid="stSidebar"] {background: #091525;}
-    div[data-testid="stMetric"] {background: #12233b; border: 1px solid #244a6b;
-      padding: 14px; border-radius: 14px;}
+    .stApp {background: #f7f9fc; color: #172033;}
+    [data-testid="stHeader"] {background: rgba(247,249,252,.92);}
+    div[data-testid="stMetric"] {background: #ffffff; border: 1px solid #d9e2ef;
+      padding: 14px; border-radius: 14px; box-shadow: 0 2px 8px rgba(24,45,76,.06);}
+    div[data-testid="stMetric"] label, div[data-testid="stMetric"] [data-testid="stMetricValue"] {
+      color: #172033;
+    }
+    .stTabs [data-baseweb="tab-list"] {gap: 8px;}
+    .stTabs [data-baseweb="tab"] {background: #eaf1f8; border-radius: 9px; color: #23344f;}
+    .stTabs [aria-selected="true"] {background: #d6e8f7;}
     h1, h2, h3 {letter-spacing: .01em;}
     </style>
     """,
     unsafe_allow_html=True,
 )
-
-page = st.sidebar.radio("Page", ["Progress Dashboard", "Analyze New Data"])
-st.sidebar.caption("Shared dashboard · approved viewers only")
-
 
 @st.cache_data(show_spinner=False)
 def load_saved_progress():
@@ -80,6 +82,87 @@ def plot_drl_series(frame, ylabel, title, target_line=False, percent=False):
     if len(frame.columns) > 1 or target_line:
         ax.legend(frameon=False, ncol=min(3, len(frame.columns) + int(target_line)))
     fig.tight_layout()
+    return fig
+
+
+def shade_drl_stages(ax, sessions):
+    """Add subtle alternating bands and stage names to DRL figures."""
+    stages = [re.search(r"DRL-(\d+)", str(s)).group(1) for s in sessions]
+    start = 0
+    colors = ["#eaf3fb", "#f4f7fa"]
+    block = 0
+    while start < len(stages):
+        end = start
+        while end + 1 < len(stages) and stages[end + 1] == stages[start]:
+            end += 1
+        ax.axvspan(start - .5, end + .5, color=colors[block % 2], zorder=0)
+        ax.text((start + end) / 2, 1.02, f"DRL-{stages[start]}",
+                transform=ax.get_xaxis_transform(), ha="center", va="bottom",
+                fontsize=9, fontweight="bold", color="#35526f")
+        start = end + 1
+        block += 1
+
+
+def individual_drl_figure(rat_id, metrics):
+    sessions = metrics.index.astype(str).tolist()
+    x = np.arange(len(sessions))
+    targets = np.array([drl_target(label) for label in sessions], dtype=float)
+    fig, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
+    fig.suptitle(f"{rat_id} — DRL training overview", x=.08, ha="left",
+                 fontsize=17, fontweight="bold")
+    for ax in axes:
+        shade_drl_stages(ax, sessions)
+        ax.grid(axis="y", alpha=.25)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].plot(x, metrics["Active presses"], "o-", color="#285f8f", lw=2.4,
+                 label="Active presses")
+    axes[0].plot(x, metrics["Successful presses"], "o-", color="#2ca25f", lw=2.4,
+                 label="Rewards")
+    axes[0].set_ylabel("Count")
+    axes[0].legend(frameon=False, ncol=2)
+    axes[1].plot(x, metrics["Efficiency (%)"], "o-", color="#7a5195", lw=2.4)
+    axes[1].set_ylabel("Efficiency (%)")
+    axes[1].set_ylim(0, 105)
+    axes[2].plot(x, metrics["Median IRT (s)"], "o-", color="#ef8a32", lw=2.4,
+                 label="Median IRT")
+    axes[2].step(x, targets, where="mid", color="#d73027", ls="--", lw=2.2,
+                 label="Target")
+    axes[2].set_ylabel("Median IRT (s)")
+    axes[2].legend(frameon=False, ncol=2)
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(sessions, rotation=45, ha="right", fontsize=8)
+    fig.tight_layout(rect=[0, 0, 1, .96])
+    return fig
+
+
+def individual_pit_figure(rat_id, frame):
+    sessions = frame.index.astype(str).tolist()
+    x = np.arange(len(sessions))
+    fig, axes = plt.subplots(3, 1, figsize=(13, 10), sharex=True)
+    fig.suptitle(f"{rat_id} — PIT instrumental training overview", x=.08, ha="left",
+                 fontsize=17, fontweight="bold")
+    for ax in axes:
+        ax.grid(axis="y", alpha=.25)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].plot(x, frame["Active presses"], "o-", color="#285f8f", lw=2.4,
+                 label="Active presses")
+    axes[0].plot(x, frame["Inactive presses"], "o-", color="#9aa6b2", lw=2.2,
+                 label="Inactive presses")
+    axes[0].set_ylabel("Presses")
+    axes[0].legend(frameon=False, ncol=2)
+    axes[1].plot(x, frame["Pellets"], "o-", color="#2ca25f", lw=2.4)
+    axes[1].set_ylabel("Pellets")
+    if "Head entries" in frame:
+        axes[2].plot(x, frame["Head entries"], "o-", color="#7a5195", lw=2.4,
+                     label="Head entries")
+    if "Post-press checks" in frame:
+        axes[2].plot(x, frame["Post-press checks"], "o-", color="#ef8a32", lw=2.4,
+                     label="Post-press checks")
+    axes[2].set_ylabel("Checks")
+    axes[2].legend(frameon=False, ncol=2)
+    axes[2].set_xticks(x)
+    axes[2].set_xticklabels(sessions, rotation=45, ha="right", fontsize=9)
+    fig.tight_layout(rect=[0, 0, 1, .96])
     return fig
 
 
@@ -146,25 +229,9 @@ def render_progress_dashboard():
             r3.metric("Latest efficiency", f"{last['Efficiency (%)']:.1f}%")
             r4.metric("Latest median IRT", f"{last['Median IRT (s)']:.1f} s")
 
-            fig = plot_drl_series(
-                rat_metrics[["Active presses", "Successful presses"]],
-                "Count", f"{rat_id} — presses and rewards",
-            )
+            fig = individual_drl_figure(rat_id, rat_metrics)
             st.pyplot(fig, use_container_width=True)
             plt.close(fig)
-            fig = plot_drl_series(
-                rat_metrics[["Median IRT (s)"]], "Seconds", f"{rat_id} — median IRT",
-                target_line=True,
-            )
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-            fig = plot_drl_series(
-                rat_metrics[["Efficiency (%)"]], "Efficiency (%)", f"{rat_id} — efficiency",
-                percent=True,
-            )
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-            st.dataframe(rat_metrics.round(2), width="stretch")
             if rat_metrics["Active presses"].eq(0).any():
                 zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
                 st.warning(f"Zero active presses recorded: {zero_days}")
@@ -183,32 +250,39 @@ def render_progress_dashboard():
         c3.metric("Mean active presses", f"{current['Active presses'].mean():.1f}")
         c4.metric("Mean active preference", f"{current['Active preference'].mean():.1%}")
 
-        st.subheader("Group overview")
-        grouped = long.groupby("RI5 day", sort=True).agg(
-            active_presses=("Active presses", "mean"),
-            pellets=("Pellets", "mean"),
-            active_preference=("Active preference", "mean"),
-        )
-        st.line_chart(grouped[["active_presses", "pellets"]], height=330)
+        pit_overview_tab, pit_individual_tab = st.tabs(["Cohort overview", "Individual rats"])
+        with pit_overview_tab:
+            grouped = long.groupby("RI5 day", sort=True).agg(
+                active_presses=("Active presses", "mean"),
+                pellets=("Pellets", "mean"),
+                active_preference=("Active preference", "mean"),
+            )
+            st.line_chart(grouped[["active_presses", "pellets"]], height=330)
 
-        st.subheader("Individual rat progress")
-        pit_rat = st.selectbox("Rat", sorted(long["Rat"].dropna().unique()), key="pit_rat")
-        one = long[long["Rat"].eq(pit_rat)].sort_values("RI5 day").copy()
-        one["Session"] = ["RI-5 D1", "RI-5 D2", "RI-5 D3", "RI-15 D1", "RI-30 D1",
-                          "RI-30 D2", "RI-60 D1", "RI-60 D2", "RI-60 D3", "RI-60 D4"][:len(one)]
-        one = one.set_index("Session")
-        st.line_chart(one[["Active presses", "Inactive presses", "Pellets"]], height=310)
-        display_cols = ["Date", "Box", "Active presses", "Inactive presses", "Active preference",
-                        "Pellets", "Head entries", "Post-press checks", "Post-press check rate", "Criterion"]
-        st.dataframe(one[[c for c in display_cols if c in one.columns]], width="stretch")
+        with pit_individual_tab:
+            st.subheader("Individual rat progress")
+            pit_rat = st.selectbox("Choose a rat", sorted(long["Rat"].dropna().unique()), key="pit_rat")
+            one = long[long["Rat"].eq(pit_rat)].sort_values("RI5 day").copy()
+            one["Session"] = ["RI-5 D1", "RI-5 D2", "RI-5 D3", "RI-15 D1", "RI-30 D1",
+                              "RI-30 D2", "RI-60 D1", "RI-60 D2", "RI-60 D3", "RI-60 D4"][:len(one)]
+            one = one.set_index("Session")
+            last = one.iloc[-1]
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Latest active presses", f"{last['Active presses']:.0f}")
+            p2.metric("Latest pellets", f"{last['Pellets']:.0f}")
+            p3.metric("Active preference", f"{last['Active preference']:.1%}")
+            checks = pd.to_numeric(pd.Series([last.get("Post-press checks", np.nan)]), errors="coerce").iloc[0]
+            p4.metric("Post-press checks", "—" if pd.isna(checks) else f"{checks:.0f}")
+            fig = individual_pit_figure(pit_rat, one)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
         st.download_button("Download current PIT workbook", pit_path.read_bytes(),
                            file_name=pit_path.name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-if page == "Progress Dashboard":
-    render_progress_dashboard()
-    st.stop()
+render_progress_dashboard()
+st.stop()
 
 # Keep the app working even if the image has not yet been uploaded to GitHub.
 logo_path = Path(__file__).parent / "assets" / "lab_logo.png"

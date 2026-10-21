@@ -1,9 +1,6 @@
 # MED-PC shared progress dashboard
 
-This package extends the existing MED-PC converter with two pages:
-
-1. **Progress Dashboard** — read-only DRL and PIT group summaries and individual-rat progress.
-2. **Analyze New Data** — the existing upload, ID assignment, parsing, preview, and Excel export workflow.
+This package is a read-only DRL and PIT progress website for coworkers and supervisors.
 
 ## October 21 update
 
@@ -11,6 +8,9 @@ This package extends the existing MED-PC converter with two pages:
 - The DRL page has separate **Cohort overview** and **Individual rats** tabs.
 - Each rat has press/reward, median-IRT, efficiency, and session-table views.
 - Median-IRT plots include the programmed 5/10/15/20-second criterion in red.
+- Individual rats use a three-panel scientific overview figure.
+- The converter/review page has been removed from the shared website.
+- The site uses a light background with high-contrast cards and plots.
 
 ## Run locally
 
@@ -29,5 +29,5 @@ The dashboard reads:
 
 To update what coworkers see, replace those two files with the newest consolidated workbooks and push the change to GitHub. Streamlit will redeploy automatically. Keep the same filenames.
 
-The dashboard data are read-only. Uploaded MED-PC files on the **Analyze New Data** page remain in memory for the active session and are not written to the repository.
+The dashboard is read-only; update the two workbooks in the data folder to refresh it.
 
