@@ -1,6 +1,4 @@
-import io
 import re
-import zipfile
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -10,7 +8,7 @@ import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-10-21.4"
+APP_VERSION = "2026-10-21.6"
 
 
 st.set_page_config(page_title="Behavioral Training Progress", page_icon="🐀", layout="wide")
@@ -166,8 +164,100 @@ def individual_pit_figure(rat_id, frame):
     return fig
 
 
+@st.cache_data(show_spinner=False)
+def load_event_tables(drl_path):
+    drl = pd.read_excel(drl_path, sheet_name="IRT Long Data")
+    session_labels = [column for column in wide_metric(drl_path, "Active Presses").columns if column != "Rat"]
+    drl["Session"] = pd.to_numeric(drl["DRL day"], errors="coerce").map(
+        {day: label for day, label in enumerate(session_labels, 1)}
+    )
+    pit = pd.read_csv(Path(__file__).parent / "data" / "pit_event_long.csv.gz")
+    return drl, pit
+
+
+def drl_event_timeline(rat_id, events):
+    one = events[events["Rat"].eq(rat_id)].copy()
+    one["Press time (s)"] = pd.to_numeric(one["Press time (s)"], errors="coerce")
+    sessions = one[["DRL day", "Session", "Date", "Batch", "Box"]].drop_duplicates().sort_values("DRL day")
+    fig, axes = plt.subplots(len(sessions), 1, figsize=(14, max(6, 1.35 * len(sessions))), squeeze=False)
+    fig.suptitle(f"{rat_id}: exact DRL event timing", x=.08, ha="left", fontsize=17, fontweight="bold")
+    for ax, session in zip(axes[:, 0], sessions.itertuples(index=False)):
+        day = session[0]
+        part = one[one["DRL day"].eq(day)]
+        press = part["Press time (s)"].dropna().to_numpy() / 60
+        reward = part.loc[part["Outcome"].astype(str).str.lower().str.startswith("success"), "Press time (s)"].dropna().to_numpy() / 60
+        ax.vlines(press, .65, 1.35, color="#2468a2", lw=1.2, label="Press")
+        ax.vlines(reward, 1.65, 2.35, color="#ef8a23", lw=1.5, label="Reward")
+        ax.set_yticks([1, 2], ["Press", "Reward"])
+        ax.set_xlim(0, 45)
+        ax.grid(axis="x", alpha=.18)
+        ax.set_title(f"{session[1]} | {pd.to_datetime(session[2]).strftime('%m/%d/%y')} | Batch {session[3]}, Box {session[4]}", loc="left", fontsize=9)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[-1, 0].set_xlabel("Session time (min)")
+    fig.tight_layout(rect=[0, 0, 1, .98])
+    return fig
+
+
+def drl_irt_distribution(rat_id, events):
+    one = events[events["Rat"].eq(rat_id)].copy()
+    sessions = one[["DRL day", "Session"]].drop_duplicates().sort_values("DRL day")
+    fig, ax = plt.subplots(figsize=(max(12, len(sessions) * .72), 6.3))
+    for position, session in enumerate(sessions.itertuples(index=False)):
+        values = pd.to_numeric(one.loc[one["DRL day"].eq(session[0]), "IRT (s)"], errors="coerce").dropna().to_numpy()
+        target = drl_target(session[1])
+        shown = np.minimum(values, 30)
+        rng = np.random.default_rng(position + 1701)
+        jitter = rng.uniform(-.18, .18, len(shown))
+        colors = np.where(values >= target, "#2ca25f", "#d95f59")
+        normal = values <= 30
+        ax.scatter(position + jitter[normal], shown[normal], c=colors[normal], s=11, alpha=.58, edgecolors="none")
+        ax.scatter(position + jitter[~normal], shown[~normal], c=colors[~normal], s=22, alpha=.72, marker="^")
+        if len(values):
+            median = float(np.median(values))
+            ax.hlines(min(median, 30), position-.25, position+.25, color="#172033", lw=3)
+            pct = (values >= target).mean() * 100
+            ax.text(position, 31.2, f"{median:.1f}s\n{pct:.0f}%", ha="center", va="bottom", fontsize=7)
+    labels = sessions["Session"].astype(str).tolist()
+    ax.step(np.arange(len(labels)), [drl_target(s) for s in labels], where="mid", color="#d73027", ls="--", lw=2, label="DRL criterion")
+    ax.set_xticks(np.arange(len(labels)), labels, rotation=45, ha="right", fontsize=8)
+    ax.set_ylim(0, 35)
+    ax.set_ylabel("Inter-response time (s); triangles = >30 s")
+    ax.set_title(f"{rat_id}: inter-response-time distributions", loc="left", fontweight="bold")
+    ax.grid(axis="y", alpha=.2)
+    ax.legend(frameon=False)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+def pit_event_timeline(rat_id, events):
+    one = events[events["Rat"].eq(rat_id)].copy()
+    sessions = one[["Day", "Session", "Date", "Batch", "Box"]].drop_duplicates().sort_values("Day")
+    fig, axes = plt.subplots(len(sessions), 1, figsize=(14, max(7, 1.42 * len(sessions))), squeeze=False)
+    fig.suptitle(f"{rat_id} — PIT RI training individual event timeline", x=.08, ha="left", fontsize=17, fontweight="bold")
+    colors = {"Active press": "#2468a2", "Pellet delivery": "#ef8a23", "Post-press check": "#2ca25f"}
+    labels = [("Active press", "Press"), ("Pellet delivery", "Pellet"), ("Post-press check", "Check")]
+    for ax, session in zip(axes[:, 0], sessions.itertuples(index=False)):
+        part = one[one["Day"].eq(session.Day)]
+        counts = {}
+        for y, (event, label) in enumerate(labels, 1):
+            times = pd.to_numeric(part.loc[part["Event"].eq(event), "Time (s)"], errors="coerce").dropna().to_numpy() / 60
+            counts[event] = len(times)
+            ax.vlines(times, y-.34, y+.34, color=colors[event], lw=1.25)
+        ax.set_yticks([1, 2, 3], [label for _, label in labels])
+        ax.set_xlim(0, 30)
+        ax.grid(axis="x", alpha=.18)
+        ax.set_title(f"{session.Session} | {session.Date} | Batch {session.Batch}, Box {session.Box}", loc="left", fontsize=9)
+        ax.text(1, 1.03, f"{counts['Active press']} presses | {counts['Pellet delivery']} pellets | {counts['Post-press check']} post-press checks", transform=ax.transAxes, ha="right", va="bottom", fontsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[-1, 0].set_xlabel("Session time (min)")
+    fig.tight_layout(rect=[0, 0, 1, .98])
+    return fig
+
+
 def render_progress_dashboard():
     drl_path, pit_path = load_saved_progress()
+    drl_events, pit_events = load_event_tables(drl_path)
     st.title("Behavioral Training Progress")
     st.caption("DRL and PIT cohorts · updated October 21, 2026")
     if not drl_path.exists() or not pit_path.exists():
@@ -229,20 +319,16 @@ def render_progress_dashboard():
             r3.metric("Latest efficiency", f"{last['Efficiency (%)']:.1f}%")
             r4.metric("Latest median IRT", f"{last['Median IRT (s)']:.1f} s")
 
-            png_dir = Path(__file__).parent / "assets" / "drl_individual" / "individual_pngs"
-            timeline_png = png_dir / f"{rat_id}_DRL_event_timeline.png"
-            distribution_png = png_dir / f"{rat_id}_interpress_distribution.png"
             event_tab, irt_tab = st.tabs(["Event timeline", "IRT distribution"])
             with event_tab:
-                if timeline_png.exists():
-                    st.image(str(timeline_png), width="stretch")
-                else:
-                    st.warning("The event-timeline PNG is unavailable for this rat.")
+                fig = drl_event_timeline(rat_id, drl_events)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
+                st.caption("DRL head-entry checks are omitted because they are not reliably available.")
             with irt_tab:
-                if distribution_png.exists():
-                    st.image(str(distribution_png), width="stretch")
-                else:
-                    st.warning("The IRT-distribution PNG is unavailable for this rat.")
+                fig = drl_irt_distribution(rat_id, drl_events)
+                st.pyplot(fig, use_container_width=True)
+                plt.close(fig)
             if rat_metrics["Active presses"].eq(0).any():
                 zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
                 st.warning(f"Zero active presses recorded: {zero_days}")
@@ -284,13 +370,10 @@ def render_progress_dashboard():
             p3.metric("Active preference", f"{last['Active preference']:.1%}")
             checks = pd.to_numeric(pd.Series([last.get("Post-press checks", np.nan)]), errors="coerce").iloc[0]
             p4.metric("Post-press checks", "—" if pd.isna(checks) else f"{checks:.0f}")
-            pit_png = (Path(__file__).parent / "assets" / "pit_individual" /
-                       f"{pit_rat}_PIT_RI_Training_Through_RI60_Day3_event_timeline.png")
-            if pit_png.exists():
-                st.image(str(pit_png), width="stretch")
-                st.caption("Exact press, pellet-delivery, and first post-press check timestamps through RI-60 Day 3.")
-            else:
-                st.warning("The event-timeline PNG is unavailable for this rat.")
+            fig = pit_event_timeline(pit_rat, pit_events)
+            st.pyplot(fig, use_container_width=True)
+            plt.close(fig)
+            st.caption("Generated live from exact press, pellet-delivery, and first post-press check timestamps through RI-60 Day 4.")
         st.download_button("Download current PIT workbook", pit_path.read_bytes(),
                            file_name=pit_path.name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
