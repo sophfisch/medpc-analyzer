@@ -10,7 +10,7 @@ import seaborn as sns
 import streamlit as st
 
 
-APP_VERSION = "2026-10-21.3"
+APP_VERSION = "2026-10-21.4"
 
 
 st.set_page_config(page_title="Behavioral Training Progress", page_icon="🐀", layout="wide")
@@ -229,9 +229,20 @@ def render_progress_dashboard():
             r3.metric("Latest efficiency", f"{last['Efficiency (%)']:.1f}%")
             r4.metric("Latest median IRT", f"{last['Median IRT (s)']:.1f} s")
 
-            fig = individual_drl_figure(rat_id, rat_metrics)
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
+            png_dir = Path(__file__).parent / "assets" / "drl_individual" / "individual_pngs"
+            timeline_png = png_dir / f"{rat_id}_DRL_event_timeline.png"
+            distribution_png = png_dir / f"{rat_id}_interpress_distribution.png"
+            event_tab, irt_tab = st.tabs(["Event timeline", "IRT distribution"])
+            with event_tab:
+                if timeline_png.exists():
+                    st.image(str(timeline_png), width="stretch")
+                else:
+                    st.warning("The event-timeline PNG is unavailable for this rat.")
+            with irt_tab:
+                if distribution_png.exists():
+                    st.image(str(distribution_png), width="stretch")
+                else:
+                    st.warning("The IRT-distribution PNG is unavailable for this rat.")
             if rat_metrics["Active presses"].eq(0).any():
                 zero_days = ", ".join(rat_metrics.index[rat_metrics["Active presses"].eq(0)].astype(str))
                 st.warning(f"Zero active presses recorded: {zero_days}")
@@ -273,9 +284,13 @@ def render_progress_dashboard():
             p3.metric("Active preference", f"{last['Active preference']:.1%}")
             checks = pd.to_numeric(pd.Series([last.get("Post-press checks", np.nan)]), errors="coerce").iloc[0]
             p4.metric("Post-press checks", "—" if pd.isna(checks) else f"{checks:.0f}")
-            fig = individual_pit_figure(pit_rat, one)
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
+            pit_png = (Path(__file__).parent / "assets" / "pit_individual" /
+                       f"{pit_rat}_PIT_RI_Training_Through_RI60_Day3_event_timeline.png")
+            if pit_png.exists():
+                st.image(str(pit_png), width="stretch")
+                st.caption("Exact press, pellet-delivery, and first post-press check timestamps through RI-60 Day 3.")
+            else:
+                st.warning("The event-timeline PNG is unavailable for this rat.")
         st.download_button("Download current PIT workbook", pit_path.read_bytes(),
                            file_name=pit_path.name,
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
